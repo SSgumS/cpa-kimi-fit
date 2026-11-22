@@ -1,0 +1,134 @@
+name: Release CPA Plugin
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            library: kimi-compat.so
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            library: kimi-compat.so
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            library: kimi-compat.dylib
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+            library: kimi-compat.dylib
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+            library: kimi-compat.dll
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Build Unix dynamic library
+        if: matrix.goos != 'windows'
+        shell: bash
+        env:
+          # amd64 must stay on the v1 baseline. GOAMD64 only affects the Go
+          # compiler. x_cgo_sigaction is C, compiled by the runner's GCC, which
+          # may default to x86-64-v3 and emit BMI2 (shlx) into cgo startup.
+          # That SIGILLs on CPUs without AVX2/BMI2, such as Ivy Bridge.
+          # Setting CGO_CFLAGS replaces Go's default "-O2 -g", so keep both.
+          GOAMD64: ${{ matrix.goarch == 'amd64' && 'v1' || '' }}
+          CGO_CFLAGS: ${{ matrix.goarch == 'amd64' && '-O2 -g -march=x86-64' || '' }}
+          CGO_CXXFLAGS: ${{ matrix.goarch == 'amd64' && '-O2 -g -march=x86-64' || '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          CGO_ENABLED=1 go build -buildmode=c-shared -o "dist/${{ matrix.library }}" .
+          if [ "${{ matrix.goos }}" = "linux" ] && [ "${{ matrix.goarch }}" = "amd64" ]; then
+            section="$(objdump -d --no-show-raw-insn "dist/${{ matrix.library }}" | sed -n '/<x_cgo_sigaction>:/,/^$/p')"
+            test -n "$section"
+            if printf '%s\n' "$section" | grep -qE '\b(shlx|mulx|andn|bzhi|bextr|sarx|pdep|pext)\b'; then
+              echo "BMI2 leaked into x_cgo_sigaction" >&2
+              printf '%s\n' "$section" >&2
+              exit 1
+            fi
+          fi
+      - name: Build Windows dynamic library
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        env:
+          GOAMD64: ${{ matrix.goarch == 'amd64' && 'v1' || '' }}
+          CGO_CFLAGS: ${{ matrix.goarch == 'amd64' && '-O2 -g -march=x86-64' || '' }}
+          CGO_CXXFLAGS: ${{ matrix.goarch == 'amd64' && '-O2 -g -march=x86-64' || '' }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $env:CGO_ENABLED = '1'
+          go build -buildmode=c-shared -o "dist/${{ matrix.library }}" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/${{ matrix.library }}
+          if-no-files-found: error
+
+  release:
+    name: Package and publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Package CPA plugin store assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          test -n "$version"
+          mkdir -p release
+          while IFS=':' read -r goos goarch library; do
+            source="artifacts/plugin-${goos}-${goarch}/${library}"
+            archive="kimi-compat_${version}_${goos}_${goarch}.zip"
+            test -s "$source"
+            zip -j "release/$archive" "$source"
+          done <<'TARGETS'
+          linux:amd64:kimi-compat.so
+          linux:arm64:kimi-compat.so
+          darwin:amd64:kimi-compat.dylib
+          darwin:arm64:kimi-compat.dylib
+          windows:amd64:kimi-compat.dll
+          TARGETS
+          (
+            cd release
+            sha256sum *.zip > checksums.txt
+          )
+      - name: Verify archive contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          for archive in release/*.zip; do
+            test "$(unzip -Z1 "$archive" | wc -l)" -eq 1
+          done
+          (
+            cd release
+            sha256sum --check checksums.txt
+          )
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/*.zip
+            release/checksums.txt
