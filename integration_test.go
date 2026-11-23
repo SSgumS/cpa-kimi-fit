@@ -24,10 +24,11 @@ import (
 )
 
 const (
-	pluginExt  = ".so"
-	clientKey  = "tk-abcdefg-abcdefg"
-	mgmtSecret = "e2e-mgmt-secret"
-	modelAlias = "high"
+	pluginExt        = ".so"
+	clientKey        = "tk-abcdefg-abcdefg"
+	mgmtSecret       = "e2e-mgmt-secret"
+	modelAlias       = "high"
+	kimiAuthFileName = "kimi-fake.json"
 )
 
 func envOrDefault(key, fallback string) string {
@@ -218,7 +219,7 @@ func startHarness(t *testing.T, numClaudes, kimiTriggerBytes, kimiLandingBytes, 
 		}
 	}
 	kimiAuth := fmt.Sprintf(`{"type":"kimi","access_token":"fake-kimi","token_type":"Bearer","base_url":%q,"expired":"2099-01-01T00:00:00Z","priority":10}`, h.kimi.url())
-	if err := os.WriteFile(filepath.Join(authDir, "kimi-fake.json"), []byte(kimiAuth), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(authDir, kimiAuthFileName), []byte(kimiAuth), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -307,6 +308,7 @@ oauth:
 	})
 	h.waitReady(t)
 	h.mintKey(t)
+	h.waitModelAlias(t)
 	return h
 }
 
@@ -337,6 +339,52 @@ func (h *harness) waitReady(t *testing.T) {
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Fatal("cpa did not become ready in 60s")
+}
+
+// waitModelAlias waits until the harness plan model is routable. A minted key
+// alone does not mean the auth files and their model registrations are loaded:
+// a request arriving before that fails with model_not_found. The management
+// auth-model registry is the direct signal, since routing resolves providers
+// through the same registry entry.
+func (h *harness) waitModelAlias(t *testing.T) {
+	t.Helper()
+	url := fmt.Sprintf("http://127.0.0.1:%d/v0/management/auth-files/models?name=%s", h.port, kimiAuthFileName)
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		req.Header.Set("Authorization", "Bearer "+mgmtSecret)
+		resp, err := h.client.Do(req)
+		if err == nil {
+			raw, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK && authModelsInclude(raw, modelAlias) {
+				return
+			}
+		}
+		if h.cmd.ProcessState != nil && h.cmd.ProcessState.Exited() {
+			t.Fatalf("cpa exited while waiting for model alias")
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("model alias %q not registered in 60s", modelAlias)
+}
+
+// authModelsInclude reports whether an auth-models response lists modelID.
+func authModelsInclude(raw []byte, modelID string) bool {
+	var payload struct {
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	for _, model := range payload.Models {
+		if model.ID == modelID {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *harness) mintKey(t *testing.T) {

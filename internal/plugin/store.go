@@ -51,7 +51,9 @@ func newPlanStore(max int, ttl time.Duration, now func() time.Time) *planStore {
 
 func (s *planStore) Put(planKey, requestID string, plan planner.RequestPlan) {
 	planKey = strings.TrimSpace(planKey)
-	requestID = strings.TrimSpace(requestID)
+	// The request ID may view a request buffer decoded without copying; clone
+	// it so the cached reverse mapping never keeps that payload alive.
+	requestID = strings.Clone(strings.TrimSpace(requestID))
 	if planKey == "" {
 		return
 	}

@@ -31,14 +31,12 @@ func stubAuthProvider(provider string) {
 
 func interceptReq(t *testing.T, sourceFormat string, headers map[string][]string, metadata map[string]any, body []byte) []byte {
 	t.Helper()
-	raw, err := json.Marshal(rpcRequestInterceptRequest{
-		RequestInterceptRequest: pluginapi.RequestInterceptRequest{
-			RequestID:    "req-test",
-			SourceFormat: sourceFormat,
-			Headers:      headers,
-			Metadata:     metadata,
-			Body:         body,
-		},
+	raw, err := json.Marshal(pluginapi.RequestInterceptRequest{
+		RequestID:    "req-test",
+		SourceFormat: sourceFormat,
+		Headers:      headers,
+		Metadata:     metadata,
+		Body:         body,
 	})
 	if err != nil {
 		t.Fatal(err)

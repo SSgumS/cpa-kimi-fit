@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	moegojson "github.com/MoeForge/moego/json"
 	"github.com/router-for-me/kimi-fit-plugin/internal/planner"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -24,30 +25,95 @@ const (
 	kimiExclusionValue = "kimi,kimi-ai,kimi.ai,kimi.com"
 )
 
-type rpcRequestInterceptRequest struct {
-	pluginapi.RequestInterceptRequest
+// interceptRequest mirrors the wire envelope so an interceptor can read the
+// metadata without paying for the body: Body stays a RawMessage view of the
+// request buffer and is decoded into bytes only at an eligible site.
+type interceptRequest struct {
+	RequestID      string
+	TraceID        string
+	SourceFormat   string
+	ToFormat       string
+	Model          string
+	RequestedModel string
+	Stream         bool
+	Headers        http.Header
+	Body           json.RawMessage
+	CallerScope    string
+	Metadata       map[string]any
 	HostCallbackID string `json:"host_callback_id,omitempty"`
+
+	body        []byte
+	bodyDecoded bool
+	bodyErr     error
+}
+
+// decodeInterceptRequest parses one interceptor envelope without copying the
+// body. Because the body stays a view until an eligible site asks for it, a
+// callback that skips (source format, nested-only, selected provider) also
+// ignores a body that cannot be decoded. Everything else is unchanged: tracing
+// needs the decoded size, so an enabled trace file decodes up front, and an
+// eligible callback still returns the body decode error.
+func decodeInterceptRequest(raw []byte, traceEnabled bool) (interceptRequest, error) {
+	var req interceptRequest
+	if err := moegojson.UnmarshalNoCopy(raw, &req); err != nil {
+		return interceptRequest{}, err
+	}
+	if traceEnabled {
+		if _, err := req.decodeBody(); err != nil {
+			return interceptRequest{}, err
+		}
+	}
+	return req, nil
+}
+
+func (r *interceptRequest) decodeBody() ([]byte, error) {
+	if r.bodyDecoded {
+		return r.body, r.bodyErr
+	}
+	r.bodyDecoded = true
+	if len(r.Body) == 0 {
+		return nil, nil
+	}
+	var body []byte
+	if err := json.Unmarshal(r.Body, &body); err != nil {
+		r.bodyErr = err
+		return nil, err
+	}
+	r.body = body
+	return body, nil
+}
+
+func (r *interceptRequest) bodyLen() int {
+	return len(r.body)
 }
 
 // interceptBeforeAuth plans edits without touching the body. A plan that
 // cannot fit Kimi's byte budget emits the trusted provider-exclusion header so
 // the scheduler picks another healthy candidate for this request only.
 func interceptBeforeAuth(request []byte) ([]byte, error) {
-	var req rpcRequestInterceptRequest
-	if err := json.Unmarshal(request, &req); err != nil {
+	c := cfg()
+	req, err := decodeInterceptRequest(request, c.TraceFile != "")
+	if err != nil {
 		return nil, err
 	}
 	reservationID := headerValueFold(req.Headers, reservationHeader)
-	trace(cfg(), "before_auth", req, reservationID, "")
+	trace(c, "before_auth", req, reservationID, "")
 
-	if !isClaudeSource(req.SourceFormat) || len(req.Body) == 0 {
+	if !isClaudeSource(req.SourceFormat) {
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	}
 	nested := reservationID != "" || metadataString(req.Metadata, "source") == "plugin_host_model_callback"
-	if cfg().NestedOnly && !nested {
+	if c.NestedOnly && !nested {
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	}
-	if len(req.Body) <= cfg().fastPathMaxBytes() && !planner.MayContainToolReference(req.Body) {
+	body, err := req.decodeBody()
+	if err != nil {
+		return nil, err
+	}
+	if len(body) == 0 {
+		return okEnvelope(pluginapi.RequestInterceptResponse{})
+	}
+	if len(body) <= c.fastPathMaxBytes() && !planner.MayContainToolReference(body) {
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	}
 
@@ -55,7 +121,7 @@ func interceptBeforeAuth(request []byte) ([]byte, error) {
 	if planKey == "" {
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	}
-	plan, err := planner.BuildKimiRequestPlan(req.Body, cfg().planOptions())
+	plan, err := planner.BuildKimiRequestPlan(body, c.planOptions())
 	if err != nil {
 		// Malformed body: fail open and let the provider answer.
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
@@ -73,36 +139,41 @@ func interceptBeforeAuth(request []byte) ([]byte, error) {
 // interceptAfterAuth applies the cached plan only when the selected credential
 // is Kimi; every other provider receives the original body untouched.
 func interceptAfterAuth(request []byte) ([]byte, error) {
-	var req rpcRequestInterceptRequest
-	if err := json.Unmarshal(request, &req); err != nil {
+	c := cfg()
+	req, err := decodeInterceptRequest(request, c.TraceFile != "")
+	if err != nil {
 		return nil, err
 	}
 	reservationID := headerValueFold(req.Headers, reservationHeader)
 	resp := pluginapi.RequestInterceptResponse{ClearHeaders: []string{excludeProvidersHeader}}
 
 	if !isClaudeSource(req.SourceFormat) {
-		trace(cfg(), "after_auth_skip_format", req, reservationID, "")
+		trace(c, "after_auth_skip_format", req, reservationID, "")
 		return okEnvelope(resp)
 	}
 	authIndex := metadataString(req.Metadata, "selected_auth_index")
 	if authIndex == "" {
 		// Outer pass through a plugin executor has no selected auth: nothing
 		// provider-specific can be decided here.
-		trace(cfg(), "after_auth_no_auth", req, reservationID, "")
+		trace(c, "after_auth_no_auth", req, reservationID, "")
 		return okEnvelope(resp)
 	}
 	provider, err := lookupAuthProvider(authIndex)
 	if err != nil || !isKimiProvider(provider) {
-		trace(cfg(), "after_auth_non_kimi", req, reservationID, provider)
+		trace(c, "after_auth_non_kimi", req, reservationID, provider)
 		return okEnvelope(resp)
 	}
-	trace(cfg(), "after_auth_kimi", req, reservationID, provider)
+	trace(c, "after_auth_kimi", req, reservationID, provider)
 
+	body, err := req.decodeBody()
+	if err != nil {
+		return nil, err
+	}
 	planKey, _ := planKeyFor(req, reservationID)
 	if s := planStoreInstance(); s != nil && planKey != "" {
-		if plan, ok := s.Get(planKey, req.Body); ok {
+		if plan, ok := s.Get(planKey, body); ok {
 			if !plan.FitsKimi {
-				return okEnvelope(localTooLargeResponse(resp, plan, cfg().TriggerBytes))
+				return okEnvelope(localTooLargeResponse(resp, plan, c.TriggerBytes))
 			}
 			resp.BodyEdits = plan.Edits
 			return okEnvelope(resp)
@@ -110,15 +181,15 @@ func interceptAfterAuth(request []byte) ([]byte, error) {
 	}
 	// Cache miss or stale hash: re-plan inline rather than send a body we never
 	// measured. Small, tool_reference-free bodies need no work.
-	if len(req.Body) <= cfg().fastPathMaxBytes() && !planner.MayContainToolReference(req.Body) {
+	if len(body) <= c.fastPathMaxBytes() && !planner.MayContainToolReference(body) {
 		return okEnvelope(resp)
 	}
-	plan, err := planner.BuildKimiRequestPlan(req.Body, cfg().planOptions())
+	plan, err := planner.BuildKimiRequestPlan(body, c.planOptions())
 	if err != nil {
 		return okEnvelope(resp)
 	}
 	if !plan.FitsKimi {
-		return okEnvelope(localTooLargeResponse(resp, plan, cfg().TriggerBytes))
+		return okEnvelope(localTooLargeResponse(resp, plan, c.TriggerBytes))
 	}
 	resp.BodyEdits = plan.Edits
 	return okEnvelope(resp)
@@ -131,11 +202,9 @@ func completeRequest(request []byte) ([]byte, error) {
 	if err := json.Unmarshal(request, &completion); err != nil {
 		return nil, err
 	}
-	trace(cfg(), "complete:"+string(completion.Outcome), rpcRequestInterceptRequest{
-		RequestInterceptRequest: pluginapi.RequestInterceptRequest{
-			RequestID: completion.RequestID,
-			Metadata:  completion.Metadata,
-		},
+	trace(cfg(), "complete:"+string(completion.Outcome), interceptRequest{
+		RequestID: completion.RequestID,
+		Metadata:  completion.Metadata,
 	}, "", "")
 	if s := planStoreInstance(); s != nil {
 		s.DeleteByRequestID(completion.RequestID)
@@ -143,7 +212,7 @@ func completeRequest(request []byte) ([]byte, error) {
 	return okEnvelope(map[string]any{})
 }
 
-func planKeyFor(req rpcRequestInterceptRequest, reservationID string) (key string, hasReservation bool) {
+func planKeyFor(req interceptRequest, reservationID string) (key string, hasReservation bool) {
 	if reservationID != "" {
 		return "res:" + reservationID, true
 	}
@@ -181,7 +250,7 @@ func localTooLargeResponse(resp pluginapi.RequestInterceptResponse, plan planner
 // callback appends one JSON line so Task 1 can assert real callback order.
 var traceMu sync.Mutex
 
-func trace(c Config, phase string, req rpcRequestInterceptRequest, reservationID, extra string) {
+func trace(c Config, phase string, req interceptRequest, reservationID, extra string) {
 	if c.TraceFile == "" {
 		return
 	}
@@ -193,7 +262,7 @@ func trace(c Config, phase string, req rpcRequestInterceptRequest, reservationID
 		"auth_index":   metadataString(req.Metadata, "selected_auth_index"),
 		"exclude":      headerValueFold(req.Headers, excludeProvidersHeader),
 		"extra":        extra,
-		"body_bytes":   fmt.Sprintf("%d", len(req.Body)),
+		"body_bytes":   fmt.Sprintf("%d", req.bodyLen()),
 		"source_fmt":   req.SourceFormat,
 	})
 	traceMu.Lock()

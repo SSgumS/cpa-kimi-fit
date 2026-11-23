@@ -141,7 +141,9 @@ func (c *authProviderCache) flush() {
 // lookupAuthProvider resolves the selected credential's provider through the
 // host's runtime auth entry, with a short TTL cache.
 func lookupAuthProvider(authIndex string) (string, error) {
-	authIndex = strings.TrimSpace(authIndex)
+	// The index may view a request buffer decoded without copying; clone it so
+	// a cached entry never keeps that payload alive.
+	authIndex = strings.Clone(strings.TrimSpace(authIndex))
 	if authIndex == "" {
 		return "", errors.New("empty auth index")
 	}
