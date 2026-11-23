@@ -13,7 +13,7 @@ import (
 
 const (
 	pluginName    = "kimi-fit"
-	pluginVersion = "0.1.0"
+	pluginVersion = "0.1.1"
 )
 
 type registration struct {
