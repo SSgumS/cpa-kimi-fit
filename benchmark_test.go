@@ -1,6 +1,6 @@
 package main_test
 
-// Benchmarks for the planner hot paths using synthetic request fixtures.
+// Benchmarks for the planner hot paths.
 // Run: go test -run '^$' -bench . -benchmem ./...
 
 import (

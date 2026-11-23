@@ -1,3 +1,4 @@
 /kimi-fit.so
 /.local/
 *.test
+replay_private_test.go
