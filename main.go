@@ -59,7 +59,7 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/router-for-me/kimi-compat-plugin/internal/plugin"
+	"github.com/router-for-me/kimi-fit-plugin/internal/plugin"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )

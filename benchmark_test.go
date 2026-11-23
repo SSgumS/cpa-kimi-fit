@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/kimi-compat-plugin/internal/planner"
+	"github.com/router-for-me/kimi-fit-plugin/internal/planner"
 )
 
 // deterministicImage returns a deterministic pseudo-random image payload of

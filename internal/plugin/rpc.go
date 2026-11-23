@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	pluginName    = "kimi-compat"
+	pluginName    = "kimi-fit"
 	pluginVersion = "0.1.0"
 )
 
@@ -34,7 +34,7 @@ func pluginRegistration(schemaVersion uint32) registration {
 			Name:             pluginName,
 			Version:          pluginVersion,
 			Author:           "router-for-me",
-			GitHubRepository: "https://github.com/router-for-me/kimi-compat-plugin",
+			GitHubRepository: "https://github.com/router-for-me/kimi-fit-plugin",
 			ConfigFields:     pluginConfigFields(),
 		},
 		Capabilities: registrationCapability{

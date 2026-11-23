@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/kimi-compat-plugin/internal/planner"
+	"github.com/router-for-me/kimi-fit-plugin/internal/planner"
 )
 
 func testPlan(body []byte) planner.RequestPlan {

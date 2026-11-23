@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/router-for-me/kimi-compat-plugin/internal/planner"
+	"github.com/router-for-me/kimi-fit-plugin/internal/planner"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )

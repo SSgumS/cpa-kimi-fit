@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/router-for-me/kimi-compat-plugin/internal/planner"
+	"github.com/router-for-me/kimi-fit-plugin/internal/planner"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
@@ -63,14 +63,14 @@ func ParseConfig(raw []byte) (Config, error) {
 	if len(raw) > 0 {
 		var keys map[string]any
 		if err := yaml.Unmarshal(raw, &keys); err != nil {
-			return Config{}, fmt.Errorf("parse kimi-compat config: %w", err)
+			return Config{}, fmt.Errorf("parse kimi-fit config: %w", err)
 		}
 		if _, deprecated := keys["target_bytes"]; deprecated {
 			return Config{}, fmt.Errorf("target_bytes is removed: set trigger_bytes (<= %d), landing_bytes (< trigger), and quantum_bytes instead",
 				kimiHardLimitBytes-cpaMarginBytes)
 		}
 		if err := yaml.Unmarshal(raw, &cfg); err != nil {
-			return Config{}, fmt.Errorf("parse kimi-compat config: %w", err)
+			return Config{}, fmt.Errorf("parse kimi-fit config: %w", err)
 		}
 	}
 	if err := cfg.Validate(); err != nil {

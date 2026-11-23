@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/kimi-compat-plugin/internal/planner"
+	"github.com/router-for-me/kimi-fit-plugin/internal/planner"
 )
 
 // planStore keeps only edit plans — never request bodies — keyed by

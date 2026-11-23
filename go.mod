@@ -1,4 +1,4 @@
-module github.com/router-for-me/kimi-compat-plugin
+module github.com/router-for-me/kimi-fit-plugin
 
 go 1.26.10
 

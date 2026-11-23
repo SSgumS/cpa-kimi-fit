@@ -133,7 +133,7 @@ func buildArtifacts(t *testing.T) {
 			buildErr = err
 			return
 		}
-		binDir, buildErr = os.MkdirTemp(tmpRoot, "kimi-compat-e2e-*")
+		binDir, buildErr = os.MkdirTemp(tmpRoot, "kimi-fit-e2e-*")
 		if buildErr != nil {
 			return
 		}
@@ -144,7 +144,7 @@ func buildArtifacts(t *testing.T) {
 		steps := [][]string{
 			{"go", "build", "-o", filepath.Join(binDir, "cli-proxy-api"), "./cmd/server"},
 			{"go", "build", "-buildmode=c-shared", "-o", filepath.Join(pluginDir, "credit-manager"+pluginExt), "."},
-			{"go", "build", "-buildmode=c-shared", "-o", filepath.Join(pluginDir, "kimi-compat"+pluginExt), "."},
+			{"go", "build", "-buildmode=c-shared", "-o", filepath.Join(pluginDir, "kimi-fit"+pluginExt), "."},
 		}
 		dirs := []string{cpaRepo, creditRepo, pluginRootDir(t)}
 		env := append(os.Environ(),
@@ -197,7 +197,7 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
-// startHarness launches CPA with credit-manager + kimi-compat and N fake
+// startHarness launches CPA with credit-manager + kimi-fit and N fake
 // claude upstreams sharing the "high" alias with the fake kimi auth.
 func startHarness(t *testing.T, numClaudes, kimiTriggerBytes, kimiLandingBytes, kimiQuantumBytes int) *harness {
 	t.Helper()
@@ -265,7 +265,7 @@ oauth:
         sync_interval: "0"
       scheduler:
         allow_provider_exclusions: true
-    kimi-compat:
+    kimi-fit:
       enabled: true
       priority: 2
       nested_only: true

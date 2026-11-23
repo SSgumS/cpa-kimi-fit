@@ -18,23 +18,23 @@ jobs:
           - runner: ubuntu-latest
             goos: linux
             goarch: amd64
-            library: kimi-compat.so
+            library: kimi-fit.so
           - runner: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
-            library: kimi-compat.so
+            library: kimi-fit.so
           - runner: macos-15-intel
             goos: darwin
             goarch: amd64
-            library: kimi-compat.dylib
+            library: kimi-fit.dylib
           - runner: macos-15
             goos: darwin
             goarch: arm64
-            library: kimi-compat.dylib
+            library: kimi-fit.dylib
           - runner: windows-latest
             goos: windows
             goarch: amd64
-            library: kimi-compat.dll
+            library: kimi-fit.dll
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -101,15 +101,15 @@ jobs:
           mkdir -p release
           while IFS=':' read -r goos goarch library; do
             source="artifacts/plugin-${goos}-${goarch}/${library}"
-            archive="kimi-compat_${version}_${goos}_${goarch}.zip"
+            archive="kimi-fit_${version}_${goos}_${goarch}.zip"
             test -s "$source"
             zip -j "release/$archive" "$source"
           done <<'TARGETS'
-          linux:amd64:kimi-compat.so
-          linux:arm64:kimi-compat.so
-          darwin:amd64:kimi-compat.dylib
-          darwin:arm64:kimi-compat.dylib
-          windows:amd64:kimi-compat.dll
+          linux:amd64:kimi-fit.so
+          linux:arm64:kimi-fit.so
+          darwin:amd64:kimi-fit.dylib
+          darwin:arm64:kimi-fit.dylib
+          windows:amd64:kimi-fit.dll
           TARGETS
           (
             cd release
