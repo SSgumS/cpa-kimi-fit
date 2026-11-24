@@ -35,6 +35,12 @@ type PlanOptions struct {
 	LargeToolResultBytes int
 	ToolResultHeadBytes  int
 	ToolResultTailBytes  int
+	// DisableLengthTrim keeps only the validity normalization (stage 1,
+	// tool_reference -> text): no image dedup, no tool_result truncation, and
+	// FitsKimi stays true so the caller never excludes the provider or
+	// short-circuits with 413 on size. Size-based rejection is a separate
+	// policy; when it is not wanted the body goes upstream untouched.
+	DisableLengthTrim bool
 }
 
 // DefaultPlanOptions returns the pinned defaults: trigger = Kimi's hard
@@ -169,6 +175,9 @@ func BuildKimiRequestPlan(body []byte, options PlanOptions) (RequestPlan, error)
 	if err := opts.validateBudgets(); err != nil {
 		return RequestPlan{}, err
 	}
+	if opts.DisableLengthTrim && !MayContainToolReference(body) {
+		return RequestPlan{SourceSHA256: sha256.Sum256(body), EstimatedBytes: len(body), FitsKimi: true}, nil
+	}
 	if len(body) <= opts.TriggerBytes && !MayContainToolReference(body) {
 		return RequestPlan{SourceSHA256: sha256.Sum256(body), EstimatedBytes: len(body), FitsKimi: true}, nil
 	}
@@ -228,7 +237,7 @@ func BuildKimiRequestPlan(body []byte, options PlanOptions) (RequestPlan, error)
 
 	// Stage 2: duplicate images, only under byte pressure. Every eligible
 	// repeat is replaced: the information survives in the kept anchor.
-	if len(body) > opts.TriggerBytes {
+	if !opts.DisableLengthTrim && len(body) > opts.TriggerBytes {
 		totalImages := countImages(cols)
 		imgOrdinal := 0
 		for _, c := range cols {
@@ -266,7 +275,7 @@ func BuildKimiRequestPlan(body []byte, options PlanOptions) (RequestPlan, error)
 
 	// Stages 3+4 merged: one oldest-first prefix over old images and large
 	// tool_result texts until the quantized requirement is met.
-	if len(body) > opts.TriggerBytes && saved < required {
+	if !opts.DisableLengthTrim && len(body) > opts.TriggerBytes && saved < required {
 		cands, err := collectTrimCandidates(body, cols, protectedFrom, opts, edits)
 		if err != nil {
 			return RequestPlan{}, err
@@ -302,7 +311,7 @@ func BuildKimiRequestPlan(body []byte, options PlanOptions) (RequestPlan, error)
 	}
 
 	fixDuplicateAnchors(edits)
-	final, err := finalizePlan(body, opts.TriggerBytes, edits, plan.Stats)
+	final, err := finalizePlan(body, opts.TriggerBytes, edits, plan.Stats, opts.DisableLengthTrim)
 	if err != nil {
 		return RequestPlan{}, err
 	}
@@ -597,7 +606,7 @@ func fixDuplicateAnchors(edits []planEdit) {
 
 // finalizePlan re-sorts edits by source position, validates disjointness,
 // and recomputes the estimate once from the final replacement texts.
-func finalizePlan(body []byte, trigger int, edits []planEdit, stats PlanStats) (RequestPlan, error) {
+func finalizePlan(body []byte, trigger int, edits []planEdit, stats PlanStats, trimDisabled bool) (RequestPlan, error) {
 	sort.Slice(edits, func(i, j int) bool { return edits[i].start < edits[j].start })
 	for i := 1; i < len(edits); i++ {
 		if edits[i].start < edits[i-1].end {
@@ -612,7 +621,7 @@ func finalizePlan(body []byte, trigger int, edits []planEdit, stats PlanStats) (
 		estimate += len(e.repl) - (e.end - e.start)
 	}
 	plan.EstimatedBytes = estimate
-	plan.FitsKimi = estimate <= trigger
+	plan.FitsKimi = trimDisabled || estimate <= trigger
 	plan.Stats.SavedBytes = len(body) - estimate
 	return plan, nil
 }

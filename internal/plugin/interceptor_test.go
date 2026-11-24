@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"github.com/router-for-me/kimi-fit-plugin/internal/planner"
 )
 
 func configureTest(t *testing.T, yaml string) {
@@ -107,7 +108,7 @@ func oversizedBody(t *testing.T, target int) []byte {
 }
 
 func TestBeforeAuthNonFittingEmitsExclusionWithReservation(t *testing.T) {
-	configureTest(t, "trigger_bytes: 1000\nlanding_bytes: 750\nquantum_bytes: 256\n")
+	configureTest(t, "length_optimization_enabled: true\ntrigger_bytes: 1000\nlanding_bytes: 750\nquantum_bytes: 256\n")
 	body := oversizedBody(t, 1000)
 	raw, err := interceptBeforeAuth(interceptReq(t, "claude", map[string][]string{
 		reservationHeader: {"res-big"},
@@ -123,7 +124,7 @@ func TestBeforeAuthNonFittingEmitsExclusionWithReservation(t *testing.T) {
 }
 
 func TestBeforeAuthNonFittingSilentWithoutReservation(t *testing.T) {
-	configureTest(t, "trigger_bytes: 1000\nlanding_bytes: 750\nquantum_bytes: 256\n")
+	configureTest(t, "length_optimization_enabled: true\ntrigger_bytes: 1000\nlanding_bytes: 750\nquantum_bytes: 256\n")
 	body := oversizedBody(t, 1000)
 	raw, err := interceptBeforeAuth(interceptReq(t, "claude", nil, nil, body))
 	if err != nil {
@@ -216,7 +217,7 @@ func TestAfterAuthKimiAppliesPlanEdits(t *testing.T) {
 }
 
 func TestAfterAuthKimiNonFittingReturns413(t *testing.T) {
-	configureTest(t, "trigger_bytes: 1000\nlanding_bytes: 750\nquantum_bytes: 256\n")
+	configureTest(t, "length_optimization_enabled: true\ntrigger_bytes: 1000\nlanding_bytes: 750\nquantum_bytes: 256\n")
 	stubAuthProvider("kimi")
 	defer func() { HostCall = nil }()
 	body := oversizedBody(t, 1000)
@@ -329,7 +330,7 @@ func TestAfterAuthKimiNonFitting413Wording(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, cached := range []bool{true, false} {
-				configureTest(t, "")
+				configureTest(t, "length_optimization_enabled: true\n")
 				stubAuthProvider("kimi")
 				body := oversizedResultsBody(tc.protected, tc.unprotsize)
 				if cached {
@@ -366,7 +367,7 @@ func TestAfterAuthKimiNonFitting413Wording(t *testing.T) {
 // TestInterceptorsFailOpenOnMalformedBody: a body that fails planning must
 // pass through untouched — no cached plan, no exclusion, no edits, no 413.
 func TestInterceptorsFailOpenOnMalformedBody(t *testing.T) {
-	configureTest(t, "trigger_bytes: 1000\nlanding_bytes: 750\nquantum_bytes: 256\n")
+	configureTest(t, "length_optimization_enabled: true\ntrigger_bytes: 1000\nlanding_bytes: 750\nquantum_bytes: 256\n")
 	stubAuthProvider("kimi")
 	defer func() { HostCall = nil }()
 	malformed := append([]byte(`{"messages":[{broken`), []byte(strings.Repeat("x", 2000))...)
@@ -400,5 +401,131 @@ func TestInterceptorsFailOpenOnMalformedBody(t *testing.T) {
 	}
 	if len(resp.ClearHeaders) == 0 || resp.ClearHeaders[0] != excludeProvidersHeader {
 		t.Fatalf("exclusion header not cleared: %v", resp.ClearHeaders)
+	}
+}
+
+// trimPressureFixture builds a body above the default trigger that carries
+// every trim candidate: an eligible duplicate image pair, a large old
+// tool_result, and a tool_reference block. Two newer distinct images in the
+// protected tail consume ProtectedImages so the old pair stays eligible. Any
+// size edit is therefore detectable, while the tool_reference rewrite is the
+// only edit that must survive with trimming off.
+func trimPressureFixture(t *testing.T) []byte {
+	t.Helper()
+	oldImg := `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` +
+		strings.Repeat("QUJD", 1100) + `"}}` // ~4.4 KiB decoded
+	tailImgA := `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` +
+		strings.Repeat("REVG", 1100) + `"}}`
+	tailImgB := `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` +
+		strings.Repeat("R0hJ", 1100) + `"}}`
+	var sb strings.Builder
+	sb.WriteString(`{"model":"k3.1-pro","messages":[`)
+	sb.WriteString(`{"role":"user","content":[` + oldImg + `]},`)
+	sb.WriteString(`{"role":"user","content":[` + oldImg + `]},`)
+	sb.WriteString(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"` +
+		strings.Repeat("y", 100_000) + `"}]},`)
+	sb.WriteString(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":[` +
+		`{"type":"tool_reference","tool_name":"WebSearch"}]}]},`)
+	// Fillers push the candidates out of the 24-message protection window.
+	for i := 0; i < 30; i++ {
+		sb.WriteString(`{"role":"user","content":[{"type":"text","text":"filler"}]},`)
+	}
+	// Padding lands in the protected tail so trimming alone cannot fix the size.
+	sb.WriteString(`{"role":"user","content":[{"type":"text","text":"` +
+		strings.Repeat("p", 2_000_000) + `"}]},`)
+	sb.WriteString(`{"role":"user","content":[` + tailImgA + `]},`)
+	sb.WriteString(`{"role":"user","content":[` + tailImgB + `]}`)
+	sb.WriteString(`]}`)
+	return []byte(sb.String())
+}
+
+func authMeta() map[string]any {
+	return map[string]any{
+		"source":              "plugin_host_model_callback",
+		"selected_auth_index": "idx-k",
+	}
+}
+
+// TestLengthOptimizationDisabledByDefault: with the default config the same
+// oversized body yields no exclusion and no 413; its only edit is the
+// tool_reference text replacement. The trimming-enabled control on the same
+// body terminates 413, proving the fixture would exercise the trim path.
+func TestLengthOptimizationDisabledByDefault(t *testing.T) {
+	body := trimPressureFixture(t)
+
+	configureTest(t, "")
+	stubAuthProvider("kimi")
+	defer func() { HostCall = nil }()
+
+	before, err := interceptBeforeAuth(interceptReq(t, "claude", map[string][]string{
+		reservationHeader: {"res-off"},
+	}, map[string]any{"source": "plugin_host_model_callback"}, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeInterceptResponse(t, before).Headers.Get(excludeProvidersHeader); got != "" {
+		t.Fatalf("exclusion emitted while length optimization disabled: %q", got)
+	}
+
+	after, err := interceptAfterAuth(interceptReq(t, "claude", map[string][]string{
+		reservationHeader: {"res-off"},
+	}, authMeta(), body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := decodeInterceptResponse(t, after)
+	if resp.Terminate || resp.Body != nil {
+		t.Fatalf("oversized body terminated/rewritten while optimization disabled: %+v", resp)
+	}
+	if len(resp.BodyEdits) != 1 {
+		t.Fatalf("edits = %d, want only the tool_reference rewrite", len(resp.BodyEdits))
+	}
+	if e := resp.BodyEdits[0]; !strings.Contains(e.Replacement, "tool_reference: WebSearch") {
+		t.Fatalf("unexpected edit replacement: %.80s", e.Replacement)
+	}
+
+	// Enabled control: the same fixture must actually exercise both trim
+	// stages (a 413 alone would not prove either ran), then terminate 413
+	// because the protected tail cannot be trimmed below the trigger.
+	enabledOpts := planner.DefaultPlanOptions()
+	enabledPlan, err := planner.BuildKimiRequestPlan(body, enabledOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabledPlan.Stats.DuplicateImages < 1 || enabledPlan.Stats.TrimmedToolResults < 1 {
+		t.Fatalf("enabled control did not exercise trim stages: %+v", enabledPlan.Stats)
+	}
+
+	configureTest(t, "length_optimization_enabled: true\n")
+	control, err := interceptAfterAuth(interceptReq(t, "claude", map[string][]string{
+		reservationHeader: {"res-ctl"},
+	}, authMeta(), body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cresp := decodeInterceptResponse(t, control); !cresp.Terminate || cresp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("enabled control should hit the trim path and 413: %+v", cresp)
+	}
+}
+
+// TestLengthOptimizationDisabledKeepsFitVerdict: disabled trimming must never
+// produce a non-fitting verdict, or the exclusion/413 paths would fire on
+// size alone.
+func TestLengthOptimizationDisabledKeepsFitVerdict(t *testing.T) {
+	body := trimPressureFixture(t)
+	opts := planner.DefaultPlanOptions()
+	opts.DisableLengthTrim = true
+	plan, err := planner.BuildKimiRequestPlan(body, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.FitsKimi {
+		t.Fatal("FitsKimi must stay true when length trimming is disabled")
+	}
+	if plan.Stats.DuplicateImages != 0 || plan.Stats.TrimmedToolResults != 0 || plan.Stats.OldImages != 0 {
+		t.Fatalf("trim stages ran while disabled: %+v", plan.Stats)
+	}
+	if plan.Stats.ToolReferences != 1 {
+		t.Fatalf("tool_reference normalization must still run, got %d", plan.Stats.ToolReferences)
 	}
 }

@@ -270,6 +270,7 @@ oauth:
       enabled: true
       priority: 2
       nested_only: true
+      length_optimization_enabled: true
       trigger_bytes: %d
       landing_bytes: %d
       quantum_bytes: %d

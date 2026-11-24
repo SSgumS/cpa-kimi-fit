@@ -90,3 +90,26 @@ func TestParseConfigExplicitFastPath(t *testing.T) {
 		t.Fatalf("explicit fast path = %d, want 5000", cfg.fastPathMaxBytes())
 	}
 }
+
+func TestParseConfigLengthOptimizationDefaultOff(t *testing.T) {
+	cfg, err := ParseConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LengthOptimizationEnabled {
+		t.Fatal("length_optimization_enabled must default to false")
+	}
+	if !cfg.planOptions().DisableLengthTrim {
+		t.Fatal("plan options must carry DisableLengthTrim when optimization is off")
+	}
+	cfg, err = ParseConfig([]byte("length_optimization_enabled: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LengthOptimizationEnabled {
+		t.Fatal("length_optimization_enabled: true not parsed")
+	}
+	if cfg.planOptions().DisableLengthTrim {
+		t.Fatal("plan options must not disable trimming when optimization is on")
+	}
+}

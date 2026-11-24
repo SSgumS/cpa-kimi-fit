@@ -28,6 +28,11 @@ type Config struct {
 	// the reservation header and does the real planning).
 	NestedOnly           bool   `yaml:"nested_only"`
 	AuthProviderCacheTTL string `yaml:"auth_provider_cache_ttl"`
+	// LengthOptimizationEnabled gates every size-driven body mutation (image
+	// dedup, tool_result truncation, provider exclusion, local 413). Off by
+	// default: the tool_reference normalization still runs because Kimi
+	// rejects that block type regardless of size.
+	LengthOptimizationEnabled bool `yaml:"length_optimization_enabled"`
 	// TraceFile is a test hook: when set, each interceptor callback appends a
 	// JSON line recording phase and metadata for callback-order assertions.
 	TraceFile string `yaml:"trace_file,omitempty"`
@@ -158,6 +163,7 @@ func (c Config) planOptions() planner.PlanOptions {
 		LargeToolResultBytes: c.LargeToolResultBytes,
 		ToolResultHeadBytes:  c.ToolResultHeadBytes,
 		ToolResultTailBytes:  c.ToolResultTailBytes,
+		DisableLengthTrim:    !c.LengthOptimizationEnabled,
 	}
 }
 
@@ -175,6 +181,7 @@ func pluginConfigFields() []pluginapi.ConfigField {
 		{Name: "plan_cache_max_entries", Type: pluginapi.ConfigFieldTypeInteger, Default: 128, Description: "Bounded plan cache entries."},
 		{Name: "plan_cache_ttl", Type: pluginapi.ConfigFieldTypeString, Default: "10m", Description: "Plan cache entry lifetime."},
 		{Name: "nested_only", Type: pluginapi.ConfigFieldTypeBoolean, Default: false, Description: "Skip outer-pass planning when running behind a nested plugin executor."},
+		{Name: "length_optimization_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Default: false, Description: "Enable size-driven body trimming (image dedup, tool_result truncation, provider exclusion, local 413). Off by default; tool_reference normalization always runs."},
 		{Name: "auth_provider_cache_ttl", Type: pluginapi.ConfigFieldTypeString, Default: "60s", Description: "Selected-auth provider lookup cache lifetime (0s disables)."},
 	}
 }
